@@ -1,0 +1,45 @@
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Generator with Google Drive</title>
+
+    <!-- Tailwind -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Importmap: React y pdf-lib desde CDN -->
+    <script type="importmap">
+    {
+      "imports": {
+        "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+        "react/": "https://aistudiocdn.com/react@^19.2.0/",
+        "react": "https://aistudiocdn.com/react@^19.2.0",
+        "pdf-lib": "https://cdn.jsdelivr.net/npm/pdf-lib/dist/pdf-lib.esm.js",
+        "path": "https://aistudiocdn.com/path@^0.12.7",
+        "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.0",
+        "vite": "https://aistudiocdn.com/vite@^7.2.1"
+      }
+    }
+    </script>
+
+    <!-- (opcional) tu CSS propio -->
+    <link rel="stylesheet" href="/index.css" />
+  <link rel="stylesheet" href="/index.css">
+</head>
+
+  <body class="bg-slate-900 text-white">
+    <div id="root"></div>
+
+    <!-- Mammoth: lectura de .docx -->
+    <script src="https://cdn.jsdelivr.net/npm/mammoth/mammoth.browser.min.js"></script>
+
+    <!-- pdf.js: lectura de .pdf -->
+    <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+
+    <!-- Punto de entrada React/Vite -->
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>

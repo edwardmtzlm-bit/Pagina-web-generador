@@ -1,0 +1,5 @@
+{
+  "name": "PDF Generator ",
+  "description": "A web application that generates multi-page PDF documents from a template and allows users to save them directly to their Google Drive for easy storage and categorization.",
+  "requestFramePermissions": []
+}
