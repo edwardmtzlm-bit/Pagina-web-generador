@@ -1,6 +1,8 @@
 import React, { useState, useCallback, useEffect, useRef } from "react";
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 
+const BACKEND_URL = "https://hm-pdf-backend.onrender.com";
+
 declare global {
   interface Window {
     mammoth: any;
@@ -123,8 +125,8 @@ const App: React.FC = () => {
   );
   const [pdfReady, setPdfReady] = useState(false);
 
-  // 🔒 Nuevo: checkbox para proteger el PDF
-  const [protectPdf, setProtectPdf] = useState(false);
+  // 🔒 Checkbox para proteger el PDF (activado por defecto)
+  const [protectPdf, setProtectPdf] = useState(true);
 
   const contentFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -646,7 +648,7 @@ const App: React.FC = () => {
       if (!protectPdf) {
         setGeneratedPdfBytes(out);
       } else {
-        // Si SÍ queremos protección, mandamos el PDF al backend
+        // Si SÍ queremos protección, mandamos el PDF al backend en Render
         try {
           const fileName =
             title.trim().toLowerCase().replace(/\s+/g, "_").slice(0, 40) ||
@@ -659,7 +661,7 @@ const App: React.FC = () => {
           const formData = new FormData();
           formData.append("archivo", file);
 
-          const resp = await fetch("http://127.0.0.1:8000/proteger-pdf", {
+          const resp = await fetch(`${BACKEND_URL}/proteger-pdf`, {
             method: "POST",
             body: formData,
           });
