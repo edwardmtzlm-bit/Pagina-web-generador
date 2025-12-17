@@ -149,7 +149,7 @@ const short = (t: string, n: number) => (t.length > n ? t.slice(0, n) + "…" : 
 /* COMPONENTE PRINCIPAL          */
 /* ============================= */
 
-const App: React.FC = () => {
+const Generador: React.FC = () => {
   // Estados vacíos para usar placeholder
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -370,89 +370,88 @@ const App: React.FC = () => {
   };
 
   const parsePdfToText = async (file: File) => {
-  if (!window.pdfjsLib) throw new Error("pdf.js no cargado");
+    if (!window.pdfjsLib) throw new Error("pdf.js no cargado");
 
-  const ab = await file.arrayBuffer();
-  const pdf = await window.pdfjsLib.getDocument({ data: ab }).promise;
+    const ab = await file.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: ab }).promise;
 
-  const pagesLines: string[][] = [];
+    const pagesLines: string[][] = [];
 
-  for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p);
-    const viewport = page.getViewport({ scale: 1 });
-    const tc = await page.getTextContent({ normalizeWhitespace: true });
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const viewport = page.getViewport({ scale: 1 });
+      const tc = await page.getTextContent({ normalizeWhitespace: true });
 
-    const H = viewport.height;
+      const H = viewport.height;
 
-    // Bandas a ignorar (más agresivas que antes)
-    const headerCut = H - 140; // ignora más arriba
-    const footerCut = 90;      // ignora más abajo
+      // Bandas a ignorar (más agresivas que antes)
+      const headerCut = H - 140; // ignora más arriba
+      const footerCut = 90; // ignora más abajo
 
-    // Agrupar por renglón (Y)
-    const rows: Record<number, { y: number; chunks: { x: number; s: string }[] }> = {};
+      // Agrupar por renglón (Y)
+      const rows: Record<number, { y: number; chunks: { x: number; s: string }[] }> = {};
 
-    tc.items.forEach((it: any) => {
-      const s = (it.str || "").replace(/\s+/g, " ").trim();
-      if (!s) return;
+      tc.items.forEach((it: any) => {
+        const s = (it.str || "").replace(/\s+/g, " ").trim();
+        if (!s) return;
 
-      const [, , , , x, y] = it.transform;
+        const [, , , , x, y] = it.transform;
 
-      // Filtra header/footer por posición
-      if (y >= headerCut) return;
-      if (y <= footerCut) return;
+        // Filtra header/footer por posición
+        if (y >= headerCut) return;
+        if (y <= footerCut) return;
 
-      const yKey = Math.round(y);
-      rows[yKey] ??= { y, chunks: [] };
-      rows[yKey].chunks.push({ x, s });
-    });
-
-    const sortedY = Object.keys(rows).map(Number).sort((a, b) => b - a);
-
-    const lines = sortedY
-      .map((k) =>
-        rows[k].chunks
-          .sort((a, b) => a.x - b.x)
-          .map((c) => c.s)
-          .join(" ")
-          .trim()
-      )
-      .filter((ln) => {
-        if (!ln) return false;
-        if (FOOTER_PATTERNS.some((rx) => rx.test(ln))) return false;
-        if (isStopwordLine(ln)) return false;
-        return true;
+        const yKey = Math.round(y);
+        rows[yKey] ??= { y, chunks: [] };
+        rows[yKey].chunks.push({ x, s });
       });
 
-    pagesLines.push(lines);
-  }
+      const sortedY = Object.keys(rows).map(Number).sort((a, b) => b - a);
 
-  // ===== FILTRO: remover líneas repetidas entre páginas (plantilla/OCR) =====
-  const freq = new Map<string, number>();
-  for (const lines of pagesLines) {
-    const uniq = new Set(lines.map((l) => l.toLowerCase()));
-    for (const l of uniq) freq.set(l, (freq.get(l) || 0) + 1);
-  }
+      const lines = sortedY
+        .map((k) =>
+          rows[k].chunks
+            .sort((a, b) => a.x - b.x)
+            .map((c) => c.s)
+            .join(" ")
+            .trim()
+        )
+        .filter((ln) => {
+          if (!ln) return false;
+          if (FOOTER_PATTERNS.some((rx) => rx.test(ln))) return false;
+          if (isStopwordLine(ln)) return false;
+          return true;
+        });
 
-  // Si una línea aparece en >= 40% de páginas, probablemente es plantilla
-  const threshold = Math.max(2, Math.ceil(pdf.numPages * 0.4));
-
-  const finalLines: string[] = [];
-  for (const lines of pagesLines) {
-    for (const ln of lines) {
-      const key = ln.toLowerCase();
-      if ((freq.get(key) || 0) >= threshold) continue; // quita repetidas
-      finalLines.push(ln);
+      pagesLines.push(lines);
     }
-    finalLines.push(""); // separador de página
-  }
 
-  let text = finalLines.join("\n");
-  text = text.replace(/-\n(?=[a-záéíóúñ])/gi, ""); // quita corte por guion
-  text = text.replace(/\n{3,}/g, "\n\n").trim();
+    // ===== FILTRO: remover líneas repetidas entre páginas (plantilla/OCR) =====
+    const freq = new Map<string, number>();
+    for (const lines of pagesLines) {
+      const uniq = new Set(lines.map((l) => l.toLowerCase()));
+      for (const l of uniq) freq.set(l, (freq.get(l) || 0) + 1);
+    }
 
-  return text;
-};
+    // Si una línea aparece en >= 40% de páginas, probablemente es plantilla
+    const threshold = Math.max(2, Math.ceil(pdf.numPages * 0.4));
 
+    const finalLines: string[] = [];
+    for (const lines of pagesLines) {
+      for (const ln of lines) {
+        const key = ln.toLowerCase();
+        if ((freq.get(key) || 0) >= threshold) continue; // quita repetidas
+        finalLines.push(ln);
+      }
+      finalLines.push(""); // separador de página
+    }
+
+    let text = finalLines.join("\n");
+    text = text.replace(/-\n(?=[a-záéíóúñ])/gi, ""); // quita corte por guion
+    text = text.replace(/\n{3,}/g, "\n\n").trim();
+
+    return text;
+  };
 
   const handleContentFileChange = async (ev: React.ChangeEvent<HTMLInputElement>) => {
     const file = ev.target.files?.[0];
@@ -543,7 +542,6 @@ const App: React.FC = () => {
         detectedFields.length > 0
       );
 
-      // Plantilla específica (opcional)
       const isPlantilla3 =
         templateName && templateName.toLowerCase().includes("plantilla3");
 
@@ -600,8 +598,6 @@ const App: React.FC = () => {
         height: height - bottomMargin - topBandFlow,
       };
 
-      // Si hay text body, segunda página en adelante usa un rectángulo
-      // más alto que combina título + cuerpo.
       let flowRectWithTitle: FieldRect | null = null;
       if (hasBodyField) {
         const extraHeight = titleRect.height + 8;
@@ -654,11 +650,10 @@ const App: React.FC = () => {
         ty -= LINE_H_TITLE;
       });
 
-      /* ===== CUERPO: RESPETA SALTOS DE LÍNEA ===== */
+      /* ===== CUERPO ===== */
 
       const rawBody = normalizeBody(body);
 
-      // Bloques separados por líneas en blanco (2+ saltos)
       const blocks = rawBody
         .split(/\n{2,}/)
         .map((b) => b.replace(/\s+$/g, ""))
@@ -739,12 +734,11 @@ const App: React.FC = () => {
         }
       }
 
-      /* ===== PAGINACIÓN (adaptativa) ===== */
-
+      /* ===== PAGINACIÓN ===== */
       const totalBeforeSave = pdfDoc.getPageCount();
       if (totalBeforeSave > 1) {
         const fontSmall = await pdfDoc.embedFont(StandardFonts.Helvetica);
-        const footerY = usingFormFields ? 44 : 72; // subimos un poco para evitar sobreposición
+        const footerY = usingFormFields ? 44 : 72;
 
         for (let i = 0; i < totalBeforeSave; i++) {
           const pg = pdfDoc.getPage(i);
@@ -758,27 +752,31 @@ const App: React.FC = () => {
         }
       }
 
-      // ===== Guardar PDF generado (sin protección todavía) =====
       const out = await pdfDoc.save();
 
-      // Calcula páginas desde el PDF final (por si acaso)
+      // Páginas finales (variable local, confiable para historial)
+      let pagesCount = totalBeforeSave;
       try {
         const verify = await PDFDocument.load(out);
-        setGeneratedPages(verify.getPageCount());
+        pagesCount = verify.getPageCount();
       } catch {
-        setGeneratedPages(totalBeforeSave);
+        // deja totalBeforeSave
       }
+      setGeneratedPages(pagesCount);
 
-      // Si NO queremos protección, usamos el PDF tal cual
+      // Sin protección
       if (!protectPdf) {
         setGeneratedPdfBytes(out);
         setSuccessMsg("PDF generado correctamente.");
       } else {
-        // Si SÍ queremos protección, mandamos el PDF al backend
+        // Con protección
         const fileName =
           title.trim().toLowerCase().replace(/\s+/g, "_").slice(0, 40) || "documento";
 
-        const file = new File([out], `${fileName}.pdf`, {
+        // ✅ FIX TS: convertir a ArrayBuffer “normal” para File/BlobPart
+        const outArrayBuffer = out.slice().buffer;
+
+        const file = new File([outArrayBuffer], `${fileName}.pdf`, {
           type: "application/pdf",
         });
 
@@ -790,9 +788,7 @@ const App: React.FC = () => {
           body: formData,
         });
 
-        if (!resp.ok) {
-          throw new Error(`Backend respondió ${resp.status}`);
-        }
+        if (!resp.ok) throw new Error(`Backend respondió ${resp.status}`);
 
         const blob = await resp.blob();
         const buf = await blob.arrayBuffer();
@@ -807,15 +803,20 @@ const App: React.FC = () => {
       const bodyClipped = bodyNormalized.slice(0, 20000);
       const bodyPreview = short(bodyClipped.replace(/\s+/g, " ").trim(), 160);
 
+      const id =
+        (globalThis.crypto as any)?.randomUUID?.()
+          ? (globalThis.crypto as any).randomUUID()
+          : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
       const item: HistoryItem = {
-        id: crypto?.randomUUID?.() ? crypto.randomUUID() : String(Date.now()),
+        id,
         title: title || "Sin título",
         bodyPreview,
         bodyFull: bodyClipped,
         protected: protectPdf,
         templateName: templateName || null,
         createdAt: new Date().toISOString(),
-        pages: generatedPages ?? undefined,
+        pages: pagesCount,
       };
 
       const updated = [item, ...history].slice(0, 20);
@@ -838,7 +839,6 @@ const App: React.FC = () => {
     templateName,
     protectPdf,
     history,
-    generatedPages,
   ]);
 
   /* ========================================================= */
@@ -848,7 +848,9 @@ const App: React.FC = () => {
   const downloadPdf = () => {
     if (!generatedPdfBytes) return;
 
-    const blob = new Blob([generatedPdfBytes], { type: "application/pdf" });
+    // ✅ FIX TS: pasar ArrayBuffer “normal” al Blob
+    const blob = new Blob([generatedPdfBytes.slice().buffer], { type: "application/pdf" });
+
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
 
@@ -1085,6 +1087,7 @@ const App: React.FC = () => {
                         <p className="text-xs text-purple-200/70 mt-1">
                           {fmtDate(h.createdAt)} · {h.protected ? "Protegido ✅" : "Sin protección ❌"}
                           {h.templateName ? ` · ${h.templateName}` : ""}
+                          {typeof h.pages === "number" ? ` · ${h.pages} pág.` : ""}
                         </p>
                         {h.bodyPreview && (
                           <p className="text-sm text-purple-200/90 mt-2">
@@ -1140,9 +1143,7 @@ const App: React.FC = () => {
 
               <div className="flex items-center justify-between">
                 <span className="text-purple-200/80">Páginas</span>
-                <span className="font-semibold">
-                  {summary.pages ?? (generatedPdfBytes ? "—" : "—")}
-                </span>
+                <span className="font-semibold">{summary.pages ?? "—"}</span>
               </div>
 
               <div className="pt-3 border-t border-white/10">
@@ -1187,4 +1188,4 @@ const App: React.FC = () => {
   );
 };
 
-export default App;
+export default Generador;

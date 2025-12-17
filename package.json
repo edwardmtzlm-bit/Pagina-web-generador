@@ -9,9 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react-dom": "^19.2.0",
+    "pdf-lib": "latest",
     "react": "^19.2.0",
-    "pdf-lib": "latest"
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.10.1"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
