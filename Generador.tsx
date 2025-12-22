@@ -1,5 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { HistoryItem, loadHistory, saveHistory } from "./history";
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import { Link, useLocation } from "react-router-dom";
 
 const BACKEND_URL = "https://hm-pdf-backend.onrender.com"; // tu backend en Render
 
@@ -12,18 +14,18 @@ declare global {
 
 type FieldRect = { x: number; y: number; width: number; height: number };
 
-type HistoryItem = {
+type RemoteTemplate = {
   id: string;
-  title: string;
-  bodyPreview: string;
-  bodyFull: string; // recortado (máx. 20k chars)
-  protected: boolean;
-  templateName: string | null;
-  createdAt: string; // ISO
-  pages?: number;
+  name: string;
+  size: number;
+  createdAt: string;
+  filename?: string;
 };
 
 const HISTORY_KEY = "hm_pdf_history_v1";
+const API_BASE =
+  (import.meta as any).env?.VITE_BACKEND_URL || BACKEND_URL;
+const API_TOKEN = (import.meta as any).env?.VITE_API_TOKEN || "";
 
 /* ============================= */
 /* CONFIGURACIONES Y STOPWORDS   */
@@ -150,6 +152,8 @@ const short = (t: string, n: number) => (t.length > n ? t.slice(0, n) + "…" : 
 /* ============================= */
 
 const Generador: React.FC = () => {
+  const location = useLocation();
+
   // Estados vacíos para usar placeholder
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -180,33 +184,68 @@ const Generador: React.FC = () => {
   // 🔒 checkbox para proteger el PDF
   const [protectPdf, setProtectPdf] = useState(false);
 
-  // 📚 Historial local
+  // 📚 Historial local (compartido con /Repositorio)
   const [history, setHistory] = useState<HistoryItem[]>([]);
+
+  // 📂 Plantillas remotas (backend)
+  const [remoteTemplates, setRemoteTemplates] = useState<RemoteTemplate[]>([]);
+  const [remoteBusy, setRemoteBusy] = useState(false);
+  const [selectedRemoteId, setSelectedRemoteId] = useState<string | null>(null);
 
   const contentFileInputRef = useRef<HTMLInputElement>(null);
 
-  /* ====================== HISTORIAL LOCAL ====================== */
-
+  // Carga historial al iniciar
   useEffect(() => {
+    setHistory(loadHistory());
+  }, []);
+
+  // Carga plantillas remotas si hay token configurado
+  const refreshRemoteTemplates = useCallback(async () => {
+    if (!API_TOKEN) return;
+    setRemoteBusy(true);
     try {
-      const raw = localStorage.getItem(HISTORY_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) setHistory(parsed);
-      }
-    } catch {
-      // ignora
+      const resp = await fetch(`${API_BASE}/api/templates`, {
+        headers: { Authorization: `Bearer ${API_TOKEN}` },
+      });
+      if (!resp.ok) throw new Error(`API respondió ${resp.status}`);
+      const data = (await resp.json()) as RemoteTemplate[];
+      setRemoteTemplates(Array.isArray(data) ? data : []);
+    } catch (e) {
+      console.error("No se pudieron cargar plantillas remotas", e);
+    } finally {
+      setRemoteBusy(false);
     }
   }, []);
 
+  useEffect(() => {
+    refreshRemoteTemplates();
+  }, [refreshRemoteTemplates]);
+
+  // Persistencia única (estado + localStorage)
   const persistHistory = (items: HistoryItem[]) => {
     setHistory(items);
-    try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(items));
-    } catch {
-      // si se llena el localStorage, no rompemos la app
-    }
+    saveHistory(items); // <- aquí se guarda en localStorage dentro de ./history
   };
+
+  // Cuando vienes desde Repositorio con "Reusar"
+  useEffect(() => {
+    const st: any = location.state;
+
+    if (st?.fromRepo?.id) {
+      const it: HistoryItem = st.fromRepo;
+
+      setTitle(it.title || "");
+      setBody(it.bodyFull || "");
+      setProtectPdf(!!it.protected);
+
+      setSuccessMsg("Documento cargado desde Repositorio. Solo genera de nuevo.");
+      setTimeout(() => setSuccessMsg(null), 3000);
+
+      // Limpia el state para que no se re-aplique al refrescar
+      window.history.replaceState({}, document.title);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const clearHistory = () => {
     persistHistory([]);
@@ -221,6 +260,7 @@ const Generador: React.FC = () => {
     setSuccessMsg("Listo: se cargó el documento desde historial. Solo genera de nuevo.");
     setTimeout(() => setSuccessMsg(null), 3500);
   };
+
 
   /* ====================== PDF.JS READY ====================== */
 
@@ -245,28 +285,25 @@ const Generador: React.FC = () => {
   /*    1. CARGAR PLANTILLA PDF                                */
   /* ========================================================= */
 
-  const handleTemplateChange = async (ev: React.ChangeEvent<HTMLInputElement>) => {
-    const file = ev.target.files?.[0];
-    if (!file) return;
+  const analyzeTemplateBytes = useCallback(
+    async (bytes: ArrayBuffer | Uint8Array, name: string) => {
+      setError(null);
+      setSuccessMsg(null);
+      setGeneratedPdfBytes(null);
+      setGeneratedPages(null);
+      setDetectedFields(null);
+      setFieldRects({});
+      setTitleFieldName("");
+      setBodyFieldName("");
+      setTemplateName(name);
+      const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      try {
+        const pdfDoc = await PDFDocument.load(data, { ignoreEncryption: true });
 
-    setError(null);
-    setSuccessMsg(null);
-    setGeneratedPdfBytes(null);
-    setGeneratedPages(null);
-    setDetectedFields(null);
-    setFieldRects({});
-    setTitleFieldName("");
-    setBodyFieldName("");
-    setTemplateName(file.name);
+        let names: string[] = [];
+        const rects: Record<string, FieldRect> = {};
 
-    try {
-      const bytes = await file.arrayBuffer();
-      const pdfDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
-
-      let names: string[] = [];
-      const rects: Record<string, FieldRect> = {};
-
-      // 1) pdf-lib
+        // 1) pdf-lib
       try {
         const form = pdfDoc.getForm();
         const fields = form.getFields();
@@ -284,12 +321,12 @@ const Generador: React.FC = () => {
       } catch (e) {
         console.warn("No se pudieron leer campos con pdf-lib", e);
         names = [];
-      }
+        }
 
       // 2) Fallback pdf.js
       if (names.length === 0 && window.pdfjsLib) {
         try {
-          const pdfjs = await window.pdfjsLib.getDocument({ data: bytes }).promise;
+          const pdfjs = await window.pdfjsLib.getDocument({ data }).promise;
           const anyPdf: any = pdfjs;
 
           let fieldObjs: any = null;
@@ -353,6 +390,19 @@ const Generador: React.FC = () => {
     } catch (e) {
       console.error(e);
       setError("No se pudo analizar la plantilla.");
+      throw e;
+    }
+    },
+    []
+  );
+
+  const handleTemplateChange = async (ev: React.ChangeEvent<HTMLInputElement>) => {
+    const file = ev.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const bytes = await file.arrayBuffer();
+      await analyzeTemplateBytes(bytes, file.name);
     } finally {
       ev.target.value = "";
     }
@@ -361,6 +411,87 @@ const Generador: React.FC = () => {
   /* ========================================================= */
   /*    2. CARGAR CONTENIDO (TXT/DOCX/PDF)                     */
   /* ========================================================= */
+
+  const handleRemoteUpload = async (ev: React.ChangeEvent<HTMLInputElement>) => {
+    const file = ev.target.files?.[0];
+    if (!file) return;
+    if (!API_TOKEN) {
+      setError("Configura VITE_API_TOKEN para subir plantillas al backend.");
+      ev.target.value = "";
+      return;
+    }
+    setRemoteBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("archivo", file);
+      fd.append("nombre", file.name.replace(/\.pdf$/i, ""));
+      const resp = await fetch(`${API_BASE}/api/templates`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${API_TOKEN}` },
+        body: fd,
+      });
+      if (!resp.ok) throw new Error(`Backend respondió ${resp.status}`);
+      await refreshRemoteTemplates();
+      setSuccessMsg("Plantilla subida al backend.");
+      setTimeout(() => setSuccessMsg(null), 2500);
+    } catch (e: any) {
+      setError(e.message || "No se pudo subir la plantilla.");
+    } finally {
+      ev.target.value = "";
+      setRemoteBusy(false);
+    }
+  };
+
+  const handleSelectRemote = async (id: string | null) => {
+    if (!id) {
+      setSelectedRemoteId(null);
+      setTemplateName(null);
+      setCleanTemplateBytes(null);
+      return;
+    }
+    if (!API_TOKEN) {
+      setError("Configura VITE_API_TOKEN para usar plantillas del backend.");
+      return;
+    }
+    setRemoteBusy(true);
+    try {
+      const resp = await fetch(`${API_BASE}/api/templates/${id}/download`, {
+        headers: { Authorization: `Bearer ${API_TOKEN}` },
+      });
+      if (!resp.ok) throw new Error(`Backend respondió ${resp.status}`);
+      const buf = await resp.arrayBuffer();
+      setSelectedRemoteId(id);
+      await analyzeTemplateBytes(buf, remoteTemplates.find((t) => t.id === id)?.name || "Plantilla");
+    } catch (e: any) {
+      setError(e.message || "No se pudo cargar la plantilla remota.");
+    } finally {
+      setRemoteBusy(false);
+    }
+  };
+
+  const handleDeleteRemote = async (id: string) => {
+    if (!API_TOKEN) {
+      setError("Configura VITE_API_TOKEN para borrar plantillas del backend.");
+      return;
+    }
+    setRemoteBusy(true);
+    try {
+      await fetch(`${API_BASE}/api/templates/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${API_TOKEN}` },
+      });
+      await refreshRemoteTemplates();
+      if (selectedRemoteId === id) {
+        setSelectedRemoteId(null);
+        setTemplateName(null);
+        setCleanTemplateBytes(null);
+      }
+    } catch (e) {
+      console.error("No se pudo borrar plantilla remota", e);
+    } finally {
+      setRemoteBusy(false);
+    }
+  };
 
   const parseTxtToText = async (file: File) => file.text();
 
@@ -820,6 +951,9 @@ const Generador: React.FC = () => {
       };
 
       const updated = [item, ...history].slice(0, 20);
+
+      localStorage.setItem("hm_pdf_history_v1", JSON.stringify(updated));
+
       persistHistory(updated);
 
       setTimeout(() => setSuccessMsg(null), 3500);
@@ -895,6 +1029,13 @@ const Generador: React.FC = () => {
         <p className="mt-2 text-sm text-purple-300 uppercase tracking-[0.25em]">
           Plataforma Educativa Horacio Marchand
         </p>
+        <Link
+  to="/"
+  className="mt-5 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-white/10 border border-white/20 hover:bg-white/15 text-sm"
+>
+  ← Volver al inicio
+</Link>
+
       </header>
 
       {/* Layout Pro: 2 columnas en escritorio */}
@@ -924,6 +1065,58 @@ const Generador: React.FC = () => {
               onChange={handleTemplateChange}
               className="block w-full text-purple-200 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:bg-purple-200 file:text-purple-900"
             />
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label className="text-sm text-purple-200">Plantillas en backend</label>
+                {API_TOKEN ? (
+                  <>
+                    <select
+                      className="w-full bg-white/20 rounded-md px-3 py-2"
+                      value={selectedRemoteId ?? ""}
+                      onChange={(e) => handleSelectRemote(e.target.value || null)}
+                      disabled={remoteBusy}
+                    >
+                      <option value="">(Sin plantilla remota)</option>
+                      {remoteTemplates.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} ({(t.size / 1024 / 1024).toFixed(1)} MB)
+                        </option>
+                      ))}
+                    </select>
+                    <div className="flex gap-2">
+                      <label className="flex-1 text-xs text-purple-200/80">
+                        {remoteBusy ? "Sincronizando..." : "Sincroniza al cargar la página"}
+                      </label>
+                      {selectedRemoteId && (
+                        <button
+                          onClick={() => handleDeleteRemote(selectedRemoteId)}
+                          disabled={remoteBusy}
+                          className="text-xs text-red-200 underline"
+                        >
+                          Borrar
+                        </button>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-red-200">
+                    Configura VITE_API_TOKEN para usar plantillas del backend.
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm text-purple-200">Subir al backend (.pdf)</label>
+                <input
+                  type="file"
+                  accept=".pdf"
+                  onChange={handleRemoteUpload}
+                  disabled={remoteBusy || !API_TOKEN}
+                  className="block w-full text-purple-200 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:bg-purple-200 file:text-purple-900"
+                />
+              </div>
+            </div>
 
             {templateName && (
               <p className="text-sm text-purple-200">

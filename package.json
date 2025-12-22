@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "dexie": "^4.2.1",
     "pdf-lib": "latest",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
