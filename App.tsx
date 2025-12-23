@@ -2,6 +2,7 @@ import React from "react";
 import { BrowserRouter, Routes, Route, Link } from "react-router-dom";
 import Generador from "./Generador";
 import Repositorio from "./Repositorio";
+import Diagnostico from "./Diagnostico";
 
 /* ============================= */
 /* HOME (pantalla principal)     */
@@ -69,6 +70,13 @@ const Home: React.FC = () => {
             >
               Repositorio de archivos
             </Link>
+
+            <Link
+              to="/diagnostico"
+              className="w-full text-center py-3 rounded-lg font-bold bg-purple-900 hover:bg-purple-950 transition border border-purple-700"
+            >
+              Diagnóstico (próximamente)
+            </Link>
           </div>
         </div>
       </div>
@@ -105,6 +113,7 @@ const App: React.FC = () => {
         <Route path="/" element={<Home />} />
         <Route path="/generador" element={<Generador />} />
         <Route path="/repositorio" element={<Repositorio />} />
+        <Route path="/diagnostico" element={<Diagnostico />} />
       </Routes>
     </BrowserRouter>
   );
