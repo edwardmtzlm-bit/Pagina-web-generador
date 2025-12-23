@@ -191,6 +191,7 @@ const Generador: React.FC = () => {
   const [remoteTemplates, setRemoteTemplates] = useState<RemoteTemplate[]>([]);
   const [remoteBusy, setRemoteBusy] = useState(false);
   const [selectedRemoteId, setSelectedRemoteId] = useState<string | null>(null);
+  const [remotePreviews, setRemotePreviews] = useState<Record<string, string>>({});
 
   const contentFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -220,6 +221,48 @@ const Generador: React.FC = () => {
   useEffect(() => {
     refreshRemoteTemplates();
   }, [refreshRemoteTemplates]);
+
+  // Render preview de PDF (primera página)
+  const renderPreview = useCallback(async (bytes: Uint8Array): Promise<string> => {
+    if (!window.pdfjsLib) throw new Error("pdf.js no está listo");
+    const pdf = await window.pdfjsLib.getDocument({ data: bytes }).promise;
+    const page = await pdf.getPage(1);
+    const viewport = page.getViewport({ scale: 0.35 });
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("No se pudo crear canvas");
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    return canvas.toDataURL("image/png");
+  }, []);
+
+  // Previews para plantillas remotas
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (!pdfReady || !API_TOKEN) return;
+      for (const tpl of remoteTemplates) {
+        if (remotePreviews[tpl.id]) continue;
+        try {
+          const resp = await fetch(`${API_BASE}/api/templates/${tpl.id}/download`, {
+            headers: { Authorization: `Bearer ${API_TOKEN}` },
+          });
+          if (!resp.ok) continue;
+          const buf = await resp.arrayBuffer();
+          const dataUrl = await renderPreview(new Uint8Array(buf));
+          if (cancelled) return;
+          setRemotePreviews((prev) => ({ ...prev, [tpl.id]: dataUrl }));
+        } catch (e) {
+          console.warn("No se pudo generar preview remota", tpl.name, e);
+        }
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [pdfReady, API_TOKEN, remoteTemplates, remotePreviews, renderPreview]);
 
   // Persistencia única (estado + localStorage)
   const persistHistory = (items: HistoryItem[]) => {
@@ -1071,32 +1114,53 @@ const Generador: React.FC = () => {
                 <label className="text-sm text-purple-200">Plantillas en backend</label>
                 {API_TOKEN ? (
                   <>
-                    <select
-                      className="w-full bg-white/20 rounded-md px-3 py-2"
-                      value={selectedRemoteId ?? ""}
-                      onChange={(e) => handleSelectRemote(e.target.value || null)}
-                      disabled={remoteBusy}
-                    >
-                      <option value="">(Sin plantilla remota)</option>
-                      {remoteTemplates.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.name} ({(t.size / 1024 / 1024).toFixed(1)} MB)
-                        </option>
-                      ))}
-                    </select>
-                    <div className="flex gap-2">
-                      <label className="flex-1 text-xs text-purple-200/80">
-                        {remoteBusy ? "Sincronizando..." : "Sincroniza al cargar la página"}
-                      </label>
-                      {selectedRemoteId && (
-                        <button
-                          onClick={() => handleDeleteRemote(selectedRemoteId)}
-                          disabled={remoteBusy}
-                          className="text-xs text-red-200 underline"
-                        >
-                          Borrar
-                        </button>
+                    <div className="overflow-x-auto flex gap-3 pb-2">
+                      {remoteTemplates.length === 0 && (
+                        <p className="text-xs text-purple-200/70">Sin plantillas remotas.</p>
                       )}
+                      {remoteTemplates.map((tpl) => (
+                        <div
+                          key={tpl.id}
+                          className={`min-w-[160px] w-[180px] rounded-lg border border-white/15 bg-white/5 p-3 space-y-2 ${
+                            selectedRemoteId === tpl.id ? "ring-2 ring-purple-400" : ""
+                          }`}
+                        >
+                          <div className="w-full aspect-[3/4] bg-black/40 rounded-md flex items-center justify-center overflow-hidden">
+                            {remotePreviews[tpl.id] ? (
+                              <img
+                                src={remotePreviews[tpl.id]}
+                                alt={tpl.name}
+                                className="w-full h-full object-contain"
+                              />
+                            ) : (
+                              <span className="text-xs text-purple-200/70">
+                                {remoteBusy ? "Cargando…" : "Sin preview"}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-purple-100 flex flex-col gap-1">
+                            <span className="font-semibold truncate">{tpl.name}</span>
+                            <span>{(tpl.size / 1024 / 1024).toFixed(1)} MB</span>
+                          </div>
+                          <button
+                            onClick={() => handleSelectRemote(tpl.id)}
+                            disabled={remoteBusy}
+                            className="w-full text-sm py-2 rounded-md bg-purple-700 hover:bg-purple-800 disabled:bg-purple-900"
+                          >
+                            Usar esta
+                          </button>
+                          <button
+                            onClick={() => handleDeleteRemote(tpl.id)}
+                            disabled={remoteBusy}
+                            className="w-full text-xs py-1.5 rounded-md bg-white/10 hover:bg-white/15 border border-white/15"
+                          >
+                            Borrar
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="text-xs text-purple-200/80">
+                      {remoteBusy ? "Sincronizando..." : "Sincroniza al cargar la página"}
                     </div>
                   </>
                 ) : (
