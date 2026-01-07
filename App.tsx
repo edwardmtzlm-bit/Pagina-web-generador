@@ -1,8 +1,11 @@
 import React from "react";
-import { BrowserRouter, Routes, Route, Link } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from "react-router-dom";
 import Generador from "./Generador";
 import Repositorio from "./Repositorio";
 import Diagnostico from "./Diagnostico";
+import Entregas from "./Entregas";
+import Login from "./Login";
+import { AuthProvider, useAuth } from "./auth";
 
 /* ============================= */
 /* HOME (pantalla principal)     */
@@ -75,7 +78,14 @@ const Home: React.FC = () => {
               to="/diagnostico"
               className="w-full text-center py-3 rounded-lg font-bold bg-purple-900 hover:bg-purple-950 transition border border-purple-700"
             >
-              Diagnóstico (próximamente)
+              Diagnóstico
+            </Link>
+
+            <Link
+              to="/entregas"
+              className="w-full text-center py-3 rounded-lg font-bold bg-purple-700 hover:bg-purple-800 transition border border-purple-500"
+            >
+              Entregas (privado)
             </Link>
           </div>
         </div>
@@ -102,20 +112,47 @@ const Home: React.FC = () => {
   );
 };
 
+const RequireAuth: React.FC<{ children: React.ReactElement }> = ({ children }) => {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-[#110020] via-[#050014] to-black text-white">
+        Cargando...
+      </div>
+    );
+  }
+  if (!user) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+  return children;
+};
+
 /* ============================= */
 /* APP PRINCIPAL (ROUTER)        */
 /* ============================= */
 
 const App: React.FC = () => {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/generador" element={<Generador />} />
-        <Route path="/repositorio" element={<Repositorio />} />
-        <Route path="/diagnostico" element={<Diagnostico />} />
-      </Routes>
-    </BrowserRouter>
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/generador" element={<Generador />} />
+          <Route path="/repositorio" element={<Repositorio />} />
+          <Route path="/diagnostico" element={<Diagnostico />} />
+          <Route path="/login" element={<Login />} />
+          <Route
+            path="/entregas"
+            element={
+              <RequireAuth>
+                <Entregas />
+              </RequireAuth>
+            }
+          />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   );
 };
 
