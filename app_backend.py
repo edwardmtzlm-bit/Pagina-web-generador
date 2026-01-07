@@ -1,7 +1,14 @@
-from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_404_NOT_FOUND
+
+from pydantic import BaseModel
+from sqlalchemy import create_engine, Column, String, Boolean, DateTime
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from sqlalchemy.sql import func, select
+from passlib.context import CryptContext
+from jose import jwt, JWTError
 
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
@@ -15,7 +22,7 @@ import textwrap
 import os
 import uuid
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 app = FastAPI(
@@ -39,8 +46,154 @@ app.add_middleware(
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
 TEMPLATES_DIR = Path(os.getenv("TEMPLATES_DIR", "templates"))
 MAX_TEMPLATE_MB = float(os.getenv("MAX_TEMPLATE_MB", "15"))
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
+JWT_ALG = os.getenv("JWT_ALG", "HS256").strip()
+JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "480"))
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "").strip()
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "").strip()
 
 TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+Base = declarative_base()
+engine = None
+SessionLocal = None
+
+if DATABASE_URL:
+    db_url = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+    engine = create_engine(db_url, pool_pre_ping=True)
+    SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    username = Column(String, unique=True, nullable=False, index=True)
+    email = Column(String, unique=True, nullable=True)
+    password_hash = Column(String, nullable=False)
+    role = Column(String, nullable=False, default="admin")
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: str = "vendedor"
+    email: Optional[str] = None
+
+
+class UserOut(BaseModel):
+    id: str
+    username: str
+    email: Optional[str]
+    role: str
+    is_active: bool
+
+
+def user_to_out(user: User) -> UserOut:
+    return UserOut(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        role=user.role,
+        is_active=user.is_active,
+    )
+
+
+def get_db() -> Session:
+    if not SessionLocal:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    return pwd_context.verify(password, password_hash)
+
+
+def create_access_token(subject: str) -> str:
+    if not JWT_SECRET:
+        raise HTTPException(status_code=500, detail="JWT_SECRET not configured")
+    expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
+    payload = {"sub": subject, "exp": expire}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+
+def get_current_user(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+) -> User:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Auth requerida")
+    if not JWT_SECRET:
+        raise HTTPException(status_code=500, detail="JWT_SECRET not configured")
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    except JWTError:
+        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Token invalido")
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Token invalido")
+    user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Usuario inactivo")
+    return user
+
+
+def require_admin(user: User = Depends(get_current_user)) -> User:
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Permiso denegado")
+    return user
+
+
+def ensure_admin_user() -> None:
+    if not engine or not ADMIN_USERNAME or not ADMIN_PASSWORD:
+        return
+    db = SessionLocal()
+    try:
+        existing = db.execute(select(User).where(User.username == ADMIN_USERNAME)).scalar_one_or_none()
+        if existing:
+            return
+        user = User(
+            username=ADMIN_USERNAME,
+            email=ADMIN_EMAIL or None,
+            password_hash=hash_password(ADMIN_PASSWORD),
+            role="admin",
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+    finally:
+        db.close()
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    if engine:
+        Base.metadata.create_all(bind=engine)
+        ensure_admin_user()
 
 
 def auth_guard(authorization: Optional[str]) -> None:
@@ -54,6 +207,56 @@ def auth_guard(authorization: Optional[str]) -> None:
     token = authorization.split(" ", 1)[1].strip()
     if token != API_TOKEN:
         raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Token inválido")
+
+
+# =========================
+#        AUTH API
+# =========================
+@app.post("/auth/login", response_model=TokenResponse)
+def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    user = db.execute(select(User).where(User.username == payload.username)).scalar_one_or_none()
+    if not user and "@" in payload.username:
+        user = db.execute(select(User).where(User.email == payload.username)).scalar_one_or_none()
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Credenciales invalidas")
+    if not user.is_active:
+        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Usuario inactivo")
+    token = create_access_token(user.id)
+    return TokenResponse(access_token=token)
+
+
+@app.get("/auth/me", response_model=UserOut)
+def me(current_user: User = Depends(get_current_user)):
+    return user_to_out(current_user)
+
+
+@app.post("/users", response_model=UserOut)
+def create_user(
+    payload: UserCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    role = payload.role.strip().lower()
+    if role not in {"admin", "vendedor"}:
+        raise HTTPException(status_code=400, detail="Rol invalido")
+    existing = db.execute(select(User).where(User.username == payload.username)).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=400, detail="Usuario ya existe")
+    if payload.email:
+        email_exists = db.execute(select(User).where(User.email == payload.email)).scalar_one_or_none()
+        if email_exists:
+            raise HTTPException(status_code=400, detail="Email ya existe")
+    user = User(
+        username=payload.username,
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        role=role,
+        is_active=True,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user_to_out(user)
 
 
 def sanitize_name(name: str) -> str:

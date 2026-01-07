@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-multipart
+reportlab
+PyPDF2
+SQLAlchemy
+psycopg[binary]
+passlib[bcrypt]
+python-jose
